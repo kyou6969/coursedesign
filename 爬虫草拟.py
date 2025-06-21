@@ -302,13 +302,17 @@ class UltimateMusicCrawler:
                 return self.migu_page
             
             # 创建新的咪咕上下文和页面
-            if not self.migu_context:
+            if not self.migu_context and self.browser:
                 self.migu_context = await self.browser.new_context(
                     viewport={'width': 1366, 'height': 768},
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 )
             
-            self.migu_page = await self.migu_context.new_page()
+            if self.migu_context:
+                self.migu_page = await self.migu_context.new_page()
+            else:
+                self.log("migu_context 为 None，无法创建页面")
+                return None
             
             # v10.3.7: 音频链接拦截器
             def handle_response(response):
@@ -338,13 +342,17 @@ class UltimateMusicCrawler:
                 return self.netease_page
             
             # 创建新的网易云上下文和页面
-            if not self.netease_context:
+            if not self.netease_context and self.browser:
                 self.netease_context = await self.browser.new_context(
                     viewport={'width': 1366, 'height': 768},
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 )
             
-            self.netease_page = await self.netease_context.new_page()
+            if self.netease_context:
+                self.netease_page = await self.netease_context.new_page()
+            else:
+                self.log("netease_context 为 None，无法创建页面")
+                return None
             
             # v10.3.7: 音频链接拦截器
             def handle_response(response):
@@ -1611,6 +1619,8 @@ class UltimateMusicCrawler:
                 try:
                     # 提取歌曲ID和基本信息
                     href = await link.get_attribute('href')
+                    if not href:
+                        continue
                     song_id_match = re.search(r'/song\?id=(\d+)', href)
                     if not song_id_match:
                         continue
@@ -1626,10 +1636,11 @@ class UltimateMusicCrawler:
                     artist_name = "未知歌手"
                     try:
                         # 查找歌手信息
-                        artist_elem = await parent.query_selector('.s-fc3, .artist, [class*="artist"]')
-                        if artist_elem:
-                            artist_name = await artist_elem.inner_text()
-                            artist_name = artist_name.strip()
+                        if parent:
+                            artist_elem = await parent.query_selector('.s-fc3, .artist, [class*="artist"]')
+                            if artist_elem:
+                                artist_name = await artist_elem.inner_text()
+                                artist_name = artist_name.strip()
                     except:
                         pass
                     
@@ -1968,7 +1979,7 @@ class UltimateMusicCrawler:
             return False
     
     async def play_and_capture_migu_fixed(self, song_info):
-        """v10.3.7: 咪咕歌手详情页播放捕获 - 点击封面overlay播放"""
+        """v10.3.7: 咪咕歌手详情页播放捕获 - 点击封面overlay播放，获取播放器信息"""
         page = await self.get_migu_page()
         if not page:
             return None
@@ -1993,6 +2004,12 @@ class UltimateMusicCrawler:
             if not play_success:
                 self.log(f"v10.3.7: 未能找到歌曲 {song_name} 的播放按钮")
                 return None
+            
+            # v10.3.7: 等待播放器展开和数据获取
+            self.log("v10.3.7: 等待播放器展开并获取完整信息...")
+            
+            # 等待播放器overlay出现
+            await self.wait_for_player_overlay(page, song_info)
             
             # v10.3.7: 等待音频链接捕获
             self.log("v10.3.7: 等待捕获音频链接...")
@@ -2051,7 +2068,7 @@ class UltimateMusicCrawler:
             
             if target_row:
                 # 在目标行中查找封面的overlay
-                overlay_success = await self.click_cover_overlay_in_row(target_row, song_name)
+                overlay_success = await self.click_cover_overlay_in_row(target_row, song_name, page)
                 if overlay_success:
                     return True
             
@@ -2059,7 +2076,7 @@ class UltimateMusicCrawler:
             self.log("v10.3.7: 未找到精确匹配，尝试点击第一个歌曲封面...")
             if song_rows and len(song_rows) > 0:
                 first_row = song_rows[0]
-                overlay_success = await self.click_cover_overlay_in_row(first_row, "第一首歌曲")
+                overlay_success = await self.click_cover_overlay_in_row(first_row, "第一首歌曲", page)
                 if overlay_success:
                     return True
             
@@ -2085,7 +2102,133 @@ class UltimateMusicCrawler:
             self.log(f"v10.3.7: 点击封面overlay失败: {e}")
             return False
     
-    async def click_cover_overlay_in_row(self, row, song_identifier):
+    async def wait_for_player_overlay(self, page, song_info):
+        """v10.3.7: 等待播放器overlay展开并获取封面和歌词"""
+        try:
+            song_name = song_info.get('name', '未知歌曲')
+            self.log(f"v10.3.7: 等待播放器overlay展开: {song_name}")
+            
+            # 等待播放器overlay出现
+            overlay_selectors = [
+                '[data-v-2c3aef7a].open-drawer-overlay',
+                '.open-drawer-overlay',
+                '[class*="open-drawer-overlay"]'
+            ]
+            
+            overlay_appeared = False
+            for selector in overlay_selectors:
+                try:
+                    await page.wait_for_selector(selector, timeout=10000)
+                    overlay_appeared = True
+                    self.log(f"v10.3.7: 播放器overlay已展开: {selector}")
+                    break
+                except:
+                    continue
+            
+            if not overlay_appeared:
+                self.log("v10.3.7: 播放器overlay未展开，继续获取信息...")
+            
+            # 等待元素稳定
+            await asyncio.sleep(3)
+            
+            # v10.3.7: 获取播放器中的高质量封面
+            enhanced_cover_url = await self.get_player_cover_url(page)
+            if enhanced_cover_url:
+                # 更新song_info中的封面URL
+                song_info['player_cover'] = enhanced_cover_url
+                song_info['cover'] = enhanced_cover_url  # 使用播放器封面作为主封面
+                self.log(f"v10.3.7: 获取播放器封面成功: {enhanced_cover_url[:100]}...")
+            
+            # v10.3.7: 获取播放器中的歌词
+            lyrics_content = await self.get_player_lyrics(page)
+            if lyrics_content:
+                song_info['player_lyrics'] = lyrics_content
+                self.log(f"v10.3.7: 获取播放器歌词成功: {len(lyrics_content)} 字符")
+            
+        except Exception as e:
+            self.log(f"v10.3.7: 等待播放器overlay失败: {e}")
+    
+    async def get_player_cover_url(self, page):
+        """v10.3.7: 从播放器获取高质量封面URL"""
+        try:
+            # 基于用户提供的结构查找封面
+            # <img data-v-b752f477="" class="album-cover" src="https://d.musicapp.migu.cn/data/oss/resource/...">
+            cover_selectors = [
+                'img[data-v-b752f477].album-cover',
+                'img.album-cover',
+                'img[class*="album-cover"]',
+                '[data-v-b752f477] img.album-cover',
+                '.album-cover img',
+                'img[src*="musicapp.migu.cn"]'
+            ]
+            
+            for selector in cover_selectors:
+                try:
+                    cover_img = await page.query_selector(selector)
+                    if cover_img:
+                        cover_url = await cover_img.get_attribute('src')
+                        if cover_url and 'musicapp.migu.cn' in cover_url:
+                            self.log(f"v10.3.7: 播放器封面选择器成功: {selector}")
+                            return cover_url
+                except:
+                    continue
+            
+            self.log("v10.3.7: 未找到播放器封面")
+            return None
+            
+        except Exception as e:
+            self.log(f"v10.3.7: 获取播放器封面失败: {e}")
+            return None
+    
+    async def get_player_lyrics(self, page):
+        """v10.3.7: 从播放器获取歌词内容"""
+        try:
+            # 基于用户提供的信息查找歌词
+            lyric_selectors = [
+                '.lyricblock',
+                '[class*="lyricblock"]',
+                '.lyric-block',
+                '[class*="lyric-block"]',
+                '.lyric-content',
+                '[class*="lyric-content"]',
+                '.lyrics',
+                '[class*="lyrics"]'
+            ]
+            
+            for selector in lyric_selectors:
+                try:
+                    lyric_elem = await page.query_selector(selector)
+                    if lyric_elem:
+                        # 尝试获取文本内容
+                        lyric_text = await lyric_elem.inner_text()
+                        if lyric_text and len(lyric_text.strip()) > 20:  # 歌词内容应该比较长
+                            self.log(f"v10.3.7: 播放器歌词选择器成功: {selector}")
+                            return lyric_text.strip()
+                        
+                        # 如果inner_text没有内容，尝试获取所有子元素的文本
+                        lyric_lines = await lyric_elem.query_selector_all('*')
+                        if lyric_lines:
+                            lines = []
+                            for line_elem in lyric_lines:
+                                line_text = await line_elem.inner_text()
+                                if line_text and line_text.strip():
+                                    lines.append(line_text.strip())
+                            
+                            if lines and len(lines) > 3:  # 至少有几行歌词
+                                combined_lyrics = '\n'.join(lines)
+                                self.log(f"v10.3.7: 播放器歌词组合成功: {selector}, {len(lines)}行")
+                                return combined_lyrics
+                except:
+                    continue
+            
+            self.log("v10.3.7: 未找到播放器歌词")
+            return None
+            
+        except Exception as e:
+            self.log(f"v10.3.7: 获取播放器歌词失败: {e}")
+            return None
+
+    async def click_cover_overlay_in_row(self, row, song_identifier, page):
         """v10.3.7: 在表格行中点击封面overlay"""
         try:
             # 基于用户提供的结构查找overlay
@@ -2338,11 +2481,25 @@ class UltimateMusicCrawler:
             return None
     
     async def download_cover_enhanced(self, song_info, safe_name):
-        """v10.3.7: 增强封面下载 - 确保网易云封面能正确下载"""
+        """v10.3.7: 增强封面下载 - 优先使用播放器高质量封面"""
         try:
-            cover_url = song_info.get('cover')
+            platform = song_info['platform']
+            cover_url = None
+            cover_source = "unknown"
+            
+            # v10.3.7: 优先使用播放器封面（咪咕）
+            if platform == 'migu' and song_info.get('player_cover'):
+                cover_url = song_info['player_cover']
+                cover_source = "migu_player"
+                self.log(f"v10.3.7: 使用咪咕播放器高质量封面")
+            # 备用: 使用搜索结果中的封面
+            elif song_info.get('cover'):
+                cover_url = song_info['cover']
+                cover_source = f"{platform}_search"
+                self.log(f"v10.3.7: 使用{platform}搜索结果封面")
+            
             if not cover_url:
-                self.log(f"v10.3.7: 没有封面URL: {song_info['name']}")
+                self.log(f"v10.3.7: 没有找到封面URL: {song_info['name']}")
                 return None
             
             # v10.3.7: 确保封面URL格式正确
@@ -2350,28 +2507,32 @@ class UltimateMusicCrawler:
                 if cover_url.startswith('//'):
                     cover_url = f"https:{cover_url}"
                 else:
-                    cover_url = f"https://music.163.com{cover_url}"
+                    base_url = 'https://music.163.com' if platform == 'netease' else 'https://music.migu.cn'
+                    cover_url = f"{base_url}{cover_url}"
             
             # v10.3.7: 提高封面质量
-            if song_info['platform'] == 'netease' and '?param=' not in cover_url:
+            if platform == 'netease' and '?param=' not in cover_url:
                 cover_url += '?param=500y500'  # 请求500x500分辨率的封面
             
-            ext = '.jpg'
             # 根据URL判断文件类型
+            ext = '.jpg'  # 默认
             if '.webp' in cover_url:
                 ext = '.webp'
             elif '.png' in cover_url:
                 ext = '.png'
+            elif 'musicapp.migu.cn' in cover_url:
+                # 咪咕播放器封面通常是webp格式
+                ext = '.webp'
             
             filename = f"{safe_name}{ext}"
             filepath = self.storage_path / "covers" / filename
             
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://music.migu.cn/' if song_info['platform'] == 'migu' else 'https://music.163.com/'
+                'Referer': 'https://music.migu.cn/' if platform == 'migu' else 'https://music.163.com/'
             }
             
-            self.log(f"v10.3.7: 下载封面: {cover_url[:100]}...")
+            self.log(f"v10.3.7: 下载封面: {cover_url[:100]}... (来源: {cover_source})")
             response = requests.get(cover_url, headers=headers, timeout=15)
             response.raise_for_status()
             
@@ -2390,7 +2551,14 @@ class UltimateMusicCrawler:
                 self.log(f"v10.3.7: 封面文件太小，删除: {filename}")
                 return None
             
-            self.log(f"v10.3.7: 封面下载成功: {filename} ({file_size/1024:.1f}KB)")
+            # v10.3.7: 显示封面质量信息
+            quality_info = ""
+            if cover_source == "migu_player":
+                quality_info = " (播放器高质量)"
+            elif cover_source == "netease_search" and "500y500" in cover_url:
+                quality_info = " (500x500高质量)"
+            
+            self.log(f"v10.3.7: 封面下载成功: {filename} ({file_size/1024:.1f}KB){quality_info}")
             return str(filepath)
             
         except Exception as e:
@@ -2402,34 +2570,81 @@ class UltimateMusicCrawler:
         return await self.download_cover_enhanced(song_info, safe_name)
     
     async def download_lyrics(self, song_info, safe_name):
-        """下载歌词"""
+        """下载歌词 - v10.3.7: 支持咪咕播放器歌词和网易云API歌词"""
         try:
-            if song_info['platform'] != 'netease':
-                return None
+            platform = song_info['platform']
+            lyrics_content = None
+            lyrics_source = "unknown"
             
-            song_id = song_info.get('song_id') or song_info.get('id')
-            if not song_id:
-                return None
+            # v10.3.7: 咪咕平台处理
+            if platform == 'migu':
+                # 优先使用从播放器获取的歌词
+                if song_info.get('player_lyrics'):
+                    lyrics_content = song_info['player_lyrics']
+                    lyrics_source = "migu_player"
+                    self.log(f"v10.3.7: 使用咪咕播放器歌词，长度: {len(lyrics_content)}")
+                # 备用: 尝试从API获取歌词URL
+                elif song_info.get('lyric_url'):
+                    try:
+                        response = requests.get(song_info['lyric_url'], timeout=10)
+                        if response.status_code == 200:
+                            lyrics_content = response.text
+                            lyrics_source = "migu_api"
+                            self.log(f"v10.3.7: 咪咕API歌词获取成功")
+                    except Exception as e:
+                        self.log(f"v10.3.7: 咪咕API歌词获取失败: {e}")
             
-            url = 'https://music.163.com/api/song/lyric'
-            params = {'id': song_id, 'lv': -1, 'kv': -1, 'tv': -1}
-            response = requests.get(url, params=params, timeout=10)
+            # v10.3.7: 网易云平台处理
+            elif platform == 'netease':
+                song_id = song_info.get('song_id') or song_info.get('id')
+                if song_id:
+                    url = 'https://music.163.com/api/song/lyric'
+                    params = {'id': song_id, 'lv': -1, 'kv': -1, 'tv': -1}
+                    response = requests.get(url, params=params, timeout=10)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get('code') == 200:
+                            lyrics_content = data.get('lrc', {}).get('lyric', '')
+                            lyrics_source = "netease_api"
+                            self.log(f"v10.3.7: 网易云API歌词获取成功")
             
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('code') == 200:
-                    lyric = data.get('lrc', {}).get('lyric', '')
-                    if lyric:
-                        filename = f"{safe_name}.lrc"
+            # 保存歌词文件
+            if lyrics_content and lyrics_content.strip():
+                # 确定文件扩展名
+                file_ext = ".lrc" if lyrics_source.endswith("_api") else ".txt"
+                filename = f"{safe_name}{file_ext}"
+                filepath = self.storage_path / "lyrics" / filename
+                
+                # 清理歌词内容
+                cleaned_lyrics = lyrics_content.strip()
+                
+                # 如果是播放器歌词，尝试转换为LRC格式
+                if lyrics_source == "migu_player" and not cleaned_lyrics.startswith('['):
+                    # 简单的LRC格式转换
+                    lines = cleaned_lyrics.split('\n')
+                    lrc_lines = []
+                    for i, line in enumerate(lines):
+                        if line.strip():
+                            # 简单的时间标记（每行间隔3秒）
+                            minutes = (i * 3) // 60
+                            seconds = (i * 3) % 60
+                            time_tag = f"[{minutes:02d}:{seconds:02d}.00]"
+                            lrc_lines.append(f"{time_tag}{line.strip()}")
+                    
+                    if lrc_lines:
+                        cleaned_lyrics = '\n'.join(lrc_lines)
+                        filename = f"{safe_name}.lrc"  # 使用LRC扩展名
                         filepath = self.storage_path / "lyrics" / filename
-                        
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            f.write(lyric)
-                        
-                        self.log(f"v10.3.7: 歌词下载: {filename}")
-                        return str(filepath)
-            
-            return None
+                
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(cleaned_lyrics)
+                
+                self.log(f"v10.3.7: 歌词保存成功: {filename} (来源: {lyrics_source})")
+                return str(filepath)
+            else:
+                self.log(f"v10.3.7: 没有找到可用的歌词内容 ({platform})")
+                return None
             
         except Exception as e:
             self.log(f"v10.3.7: 歌词下载失败: {e}")
@@ -2666,7 +2881,7 @@ def create_gradio_interface():
     
     global crawler_instance
     
-    with gr.Blocks(title="终极音乐爬虫 v10.3.7", theme=gr.themes.Soft()) as interface:
+    with gr.Blocks(title="终极音乐爬虫 v10.3.7") as interface:
         
         # --- 界面布局 ---
         gr.Markdown("""
@@ -2677,7 +2892,21 @@ def create_gradio_interface():
         - 🔧 **网易云封面**: 实现从搜索页跳转详情页获取高质量封面(500x500)
         - 🔧 **咪咕数据结构**: 基于用户提供的完整JSON结构解析歌曲信息
         - 🔧 **咪咕播放策略**: 歌手详情页点击封面overlay播放嗅探音频
+        - 🎵 **咪咕播放器增强**: 获取播放器展开时的高质量封面和歌词
         - 📄 **分页浏览功能**: 支持上一页/下一页/跳转页面/调整每页显示数量
+        
+        **v10.3.7 播放器增强功能:**
+        ```html
+        <!-- 播放器展开overlay -->
+        <div data-v-2c3aef7a="" class="open-drawer-overlay"></div>
+        
+        <!-- 播放器高质量封面 -->
+        <img data-v-b752f477="" class="album-cover" 
+             src="https://d.musicapp.migu.cn/data/oss/resource/...webp">
+        
+        <!-- 播放器歌词block -->
+        <div class="lyricblock">...</div>
+        ```
         
         **v10.3.7 技术架构升级:**
         ```javascript
@@ -2685,11 +2914,12 @@ def create_gradio_interface():
         POST https://music.163.com/weapi/cloudsearch/get/web
         GET  https://music.163.com/api/search/get/web
         
-        // 咪咕歌手搜索流程 (基于用户提供流程)
-        搜索歌手 → 点击歌手tab → 选择歌手 → 歌手详情页 → 点击封面overlay
+        // 咪咕完整播放流程 (基于用户提供流程)
+        搜索歌手 → 点击歌手tab → 选择歌手 → 歌手详情页 → 点击封面overlay 
+        → 等待播放器展开 → 获取播放器封面 → 获取歌词block → 捕获音频链接
         ```
         
-        **现在支持完整分页浏览，可以查看所有搜索结果！**
+        **现在支持完整分页浏览，可以查看所有搜索结果！播放器增强功能获取更高质量的封面和歌词！**
         """)
         
         with gr.Tabs():
@@ -2943,26 +3173,42 @@ def create_gradio_interface():
                 }
                 ```
                 
-                **4. 咪咕播放策略改进**
+                **4. 咪咕播放器增强功能**
                 
-                根据用户建议，不跳转歌曲页面：
+                基于用户发现的播放器展开功能：
+                ```html
+                <!-- 播放开始后，播放器会展开显示overlay -->
+                <div data-v-2c3aef7a="" class="open-drawer-overlay"></div>
+                
+                <!-- 播放器中的高质量专辑封面 -->
+                <img data-v-b752f477="" class="album-cover" 
+                     src="https://d.musicapp.migu.cn/data/oss/resource/00/4t/ai/...webp">
+                
+                <!-- 播放器中的歌词显示区块 -->
+                <div class="lyricblock">
+                  <!-- 包含完整歌词内容 -->
+                </div>
+                ```
+                
+                **播放器数据获取流程:**
                 ```javascript
-                // v10.3.7: 搜索页面直接播放
-                // 1. 通过contentId定位播放按钮
-                document.querySelector(`[data-contentid="${contentId}"] .play-btn`)
+                // v10.3.7: 完整播放器数据获取
+                // 1. 点击封面overlay开始播放
+                document.querySelector('.cover-photo .overlay').click()
                 
-                // 2. 通过歌曲名定位
-                const songNameElem = document.querySelector('.song-name')
-                const playBtn = songNameElem.closest('div').querySelector('.play-btn')
+                // 2. 等待播放器展开
+                await page.waitForSelector('[data-v-2c3aef7a].open-drawer-overlay')
                 
-                // 3. JavaScript播放兜底
-                if (window.player && window.player.play) { 
-                  window.player.play() 
-                }
+                // 3. 获取播放器高质量封面
+                const coverImg = document.querySelector('img[data-v-b752f477].album-cover')
+                const coverUrl = coverImg?.src  // https://d.musicapp.migu.cn/...
                 
-                // 4. 捕获音频链接
-                response.url.includes('freetyst.nf.migu.cn') && 
-                response.url.includes('.mp3')
+                // 4. 获取播放器歌词内容
+                const lyricsBlock = document.querySelector('.lyricblock')
+                const lyricsText = lyricsBlock?.innerText
+                
+                // 5. 继续捕获音频链接
+                response.url.includes('freetyst.nf.migu.cn') && response.url.includes('.mp3')
                 ```
                 
                 ### 🔧 v10.3.7技术实现细节
@@ -3087,7 +3333,7 @@ def create_gradio_interface():
             global crawler_instance
             try:
                 if crawler_instance and hasattr(crawler_instance, 'browser') and crawler_instance.browser:
-                    await crawler_instance.close()
+                    crawler_instance.close()
                 
                 crawler_instance = UltimateMusicCrawler(storage_path_str, browser_type)
                 await crawler_instance.ensure_browser_ready()
