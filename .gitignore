@@ -1,0 +1,39 @@
+# IDE and environment files
+.idea/
+.vscode/
+__pycache__/
+*.env
+
+# macOS system files
+.DS_Store
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Gradio files
+.gradio/
+
+# Log files
+logs/
+*.log
+
+# HTML debug files
+*.html
+
+# Report and data files
+*.json
+*.db
+*.sqlite3
+
+# Media files
+*.mp3
+*.webp
+*.lrc
+
+# Download directories from your crawler
+EnhancedDownloads/
+v10.3.2_Downloads/
+v10.3.4_Downloads/
+v10.3.6_Downloads/
+v10.3.7_API_Downloads/
+v10.3.7_Downloads/
